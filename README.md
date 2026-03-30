@@ -42,17 +42,3 @@ Prepare a preview deployment matrix from `.github/preview-sites.json`, compute t
   ]
 }
 ```
-
-## Marketplace-style repository layout
-
-- `action.yml` declares the composite action contract
-- `README.md` is the public and Marketplace-facing documentation
-- `LICENSE` keeps the repo ready for public reuse
-- `v1` is the stable tag that caller workflows should use
-
-## Publishing flow
-
-1. push the repository changes
-2. create or update the `v1` tag
-3. optionally create a GitHub Release
-4. publish the repo in GitHub Marketplace from the repository UI when you need a listing
