@@ -1,0 +1,122 @@
+name: Preview Prepare
+description: Load preview site config, compute the preview path name, and resolve the related pull request number.
+
+inputs:
+  config-path:
+    required: false
+    description: Path to preview config JSON in the caller repository.
+    default: .github/preview-sites.json
+  github-token:
+    required: true
+    description: GitHub token used to resolve the pull request number.
+
+outputs:
+  path_name:
+    description: Preview path name.
+    value: ${{ steps.path_name.outputs.path_name }}
+  pr_number:
+    description: Related pull request number when available.
+    value: ${{ steps.pr_number.outputs.result }}
+  matrix:
+    description: Matrix include config for the deploy job.
+    value: ${{ steps.config.outputs.matrix }}
+  site_names:
+    description: JSON array of configured preview site names.
+    value: ${{ steps.config.outputs.site_names }}
+
+runs:
+  using: composite
+  steps:
+    - name: Load preview config
+      id: config
+      shell: bash
+      run: |
+        config_path='${{ inputs.config-path }}'
+
+        jq -e '
+          .include | arrays and
+          all(
+            .[];
+            has("site") and
+            has("node_version") and
+            has("install_cmd") and
+            has("build_cmd") and
+            has("output")
+          )
+        ' "$config_path" > /dev/null
+
+        echo "matrix=$(jq -c '{include: .include}' "$config_path")" >> "$GITHUB_OUTPUT"
+        echo "site_names=$(jq -c '[.include[].site]' "$config_path")" >> "$GITHUB_OUTPUT"
+
+    - name: Determine path name
+      id: path_name
+      shell: bash
+      run: |
+        path_name=''
+
+        if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+          path_name="pr-$(jq -r '.number // empty' "$GITHUB_EVENT_PATH")"
+        elif [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+          safe_tag="${GITHUB_REF_NAME//\//-}"
+          safe_tag="${safe_tag//./-}"
+          path_name="$safe_tag"
+        elif [[ "$GITHUB_REF_NAME" == "stable" ]]; then
+          path_name='stable'
+        else
+          safe_ref="${GITHUB_REF_NAME//\//-}"
+          safe_ref="${safe_ref//./-}"
+          path_name="$safe_ref"
+        fi
+
+        echo "path_name=${path_name}" >> "$GITHUB_OUTPUT"
+
+    - name: Resolve pull request number
+      id: pr_number
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ inputs.github-token }}
+        result-encoding: string
+        script: |
+          const directPrNumber = context.payload.pull_request?.number;
+
+          if (directPrNumber) {
+            return String(directPrNumber);
+          }
+
+          if (context.eventName !== 'push' || !context.ref.startsWith('refs/heads/')) {
+            return '';
+          }
+
+          const branchName = context.ref.replace(/^refs\/heads\//, '');
+
+          const associatedPullRequests = await github.paginate(
+            github.rest.repos.listPullRequestsAssociatedWithCommit,
+            {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+              per_page: 100,
+            }
+          );
+
+          const associatedOpenPullRequest = associatedPullRequests.find(
+            pullRequest => pullRequest.state === 'open'
+          );
+
+          if (associatedOpenPullRequest) {
+            return String(associatedOpenPullRequest.number);
+          }
+
+          const branchPullRequests = await github.paginate(github.rest.pulls.list, {
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            state: 'open',
+            head: `${context.repo.owner}:${branchName}`,
+            per_page: 100,
+          });
+
+          const branchPullRequest = branchPullRequests.find(
+            pullRequest => pullRequest.head?.ref === branchName
+          );
+
+          return branchPullRequest ? String(branchPullRequest.number) : '';
